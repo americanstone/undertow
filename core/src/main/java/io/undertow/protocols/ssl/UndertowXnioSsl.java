@@ -18,9 +18,9 @@
 
 package io.undertow.protocols.ssl;
 
-import static org.xnio.IoUtils.safeClose;
-
 import java.io.IOException;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
@@ -33,6 +33,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SNIHostName;
@@ -41,6 +42,8 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
 
 import io.undertow.UndertowOptions;
+import io.undertow.connector.ByteBufferPool;
+import io.undertow.server.DefaultByteBufferPool;
 import org.xnio.ChannelListener;
 import org.xnio.ChannelListeners;
 import org.xnio.FutureResult;
@@ -66,8 +69,7 @@ import org.xnio.ssl.JsseXnioSsl;
 import org.xnio.ssl.SslConnection;
 import org.xnio.ssl.XnioSsl;
 
-import io.undertow.connector.ByteBufferPool;
-import io.undertow.server.DefaultByteBufferPool;
+import static org.xnio.IoUtils.safeClose;
 
 /**
  * @author Stuart Douglas
@@ -77,6 +79,7 @@ public class UndertowXnioSsl extends XnioSsl {
     private static final ByteBufferPool DEFAULT_BUFFER_POOL = new DefaultByteBufferPool(true, 17 * 1024, -1, 12);
 
     private final ByteBufferPool bufferPool;
+    private final Executor delegatedTaskExecutor;
     private volatile SSLContext sslContext;
 
     /**
@@ -94,12 +97,23 @@ public class UndertowXnioSsl extends XnioSsl {
 
     /**
      * Construct a new instance.
-     *  @param xnio the XNIO instance to associate with
+     * @param xnio the XNIO instance to associate with
      * @param optionMap the options for this provider
      * @param sslContext the SSL context to use for this instance
      */
     public UndertowXnioSsl(final Xnio xnio, final OptionMap optionMap, final SSLContext sslContext) {
         this(xnio, optionMap, DEFAULT_BUFFER_POOL, sslContext);
+    }
+
+    /**
+     * Construct a new instance.
+     * @param xnio the XNIO instance to associate with
+     * @param optionMap the options for this provider
+     * @param sslContext the SSL context to use for this instance
+     * @param delegatedTaskExecutor Executor instance used to run {@link SSLEngine#getDelegatedTask() delegated tasks}.
+     */
+    public UndertowXnioSsl(final Xnio xnio, final OptionMap optionMap, final SSLContext sslContext, final Executor delegatedTaskExecutor) {
+        this(xnio, optionMap, DEFAULT_BUFFER_POOL, sslContext, delegatedTaskExecutor);
     }
 
     /**
@@ -124,9 +138,22 @@ public class UndertowXnioSsl extends XnioSsl {
      * @param sslContext the SSL context to use for this instance
      */
     public UndertowXnioSsl(final Xnio xnio, final OptionMap optionMap, ByteBufferPool bufferPool, final SSLContext sslContext) {
+        this(xnio, optionMap, bufferPool, sslContext, null);
+    }
+
+    /**
+     * Construct a new instance.
+     *  @param xnio the XNIO instance to associate with
+     * @param optionMap the options for this provider
+     * @param bufferPool
+     * @param sslContext the SSL context to use for this instance
+     * @param delegatedTaskExecutor Executor instance used to run {@link SSLEngine#getDelegatedTask() delegated tasks}.
+     */
+    public UndertowXnioSsl(final Xnio xnio, final OptionMap optionMap, ByteBufferPool bufferPool, final SSLContext sslContext, final Executor delegatedTaskExecutor) {
         super(xnio, sslContext, optionMap);
         this.bufferPool = bufferPool;
         this.sslContext = sslContext;
+        this.delegatedTaskExecutor = delegatedTaskExecutor;
     }
 
     /**
@@ -137,6 +164,15 @@ public class UndertowXnioSsl extends XnioSsl {
     @SuppressWarnings("unused")
     public SSLContext getSslContext() {
         return sslContext;
+    }
+
+    /**
+     * Get the {@link Executor} used to run delegated tasks or {@code null} if no executor is configured.
+     *
+     * @return the delegated task executor or null
+     */
+    Executor getDelegatedTaskExecutor() {
+        return delegatedTaskExecutor;
     }
 
     /**
@@ -199,11 +235,11 @@ public class UndertowXnioSsl extends XnioSsl {
     }
 
     public SslConnection wrapExistingConnection(StreamConnection connection, OptionMap optionMap) {
-        return new UndertowSslConnection(connection, createSSLEngine(sslContext, optionMap, (InetSocketAddress) connection.getPeerAddress(), true), bufferPool);
+        return new UndertowSslConnection(connection, createSSLEngine(sslContext, optionMap, (InetSocketAddress) connection.getPeerAddress(), true), bufferPool, delegatedTaskExecutor);
     }
 
     public SslConnection wrapExistingConnection(StreamConnection connection, OptionMap optionMap, boolean clientMode) {
-        return new UndertowSslConnection(connection, createSSLEngine(sslContext, optionMap, (InetSocketAddress) connection.getPeerAddress(), clientMode), bufferPool);
+        return new UndertowSslConnection(connection, createSSLEngine(sslContext, optionMap, (InetSocketAddress) connection.getPeerAddress(), clientMode), bufferPool, delegatedTaskExecutor);
     }
 
     public SslConnection wrapExistingConnection(StreamConnection connection, OptionMap optionMap, URI destinationURI) {
@@ -213,7 +249,7 @@ public class UndertowXnioSsl extends XnioSsl {
             sslParameters.setServerNames(Collections.singletonList(new SNIHostName(destinationURI.getHost())));
             sslEngine.setSSLParameters(sslParameters);
         }
-        return new UndertowSslConnection(connection, sslEngine, bufferPool);
+        return new UndertowSslConnection(connection, sslEngine, bufferPool, delegatedTaskExecutor);
     }
 
     private InetSocketAddress getPeerAddress(URI destinationURI) {
@@ -431,8 +467,14 @@ public class UndertowXnioSsl extends XnioSsl {
 
                 SSLEngine sslEngine = JsseSslUtils.createSSLEngine(sslContext, optionMap, destination);
                 SSLParameters params = sslEngine.getSSLParameters();
-                params.setServerNames(Collections.singletonList(new SNIHostName(destination.getHostString())));
-
+                InetAddress address = destination.getAddress();
+                String hostnameValue = destination.getHostString();
+                if (address instanceof Inet6Address && hostnameValue.contains(":")) {
+                    // WFLY-13748 get hostname value instead of IPV6adress if it's ipv6
+                    // SNIHostname throw exception if adress contains :
+                    hostnameValue = address.getHostName();
+                }
+                params.setServerNames(Collections.singletonList(new SNIHostName(hostnameValue)));
                 final String endpointIdentificationAlgorithm = optionMap.get(UndertowOptions.ENDPOINT_IDENTIFICATION_ALGORITHM, null);
                 if (endpointIdentificationAlgorithm != null) {
                     params.setEndpointIdentificationAlgorithm(endpointIdentificationAlgorithm);
@@ -440,7 +482,7 @@ public class UndertowXnioSsl extends XnioSsl {
 
                 sslEngine.setSSLParameters(params);
 
-                final SslConnection wrappedConnection = new UndertowSslConnection(connection, sslEngine, bufferPool);
+                final SslConnection wrappedConnection = new UndertowSslConnection(connection, sslEngine, bufferPool, delegatedTaskExecutor);
                 if (!futureResult.setResult(wrappedConnection)) {
                     IoUtils.safeClose(connection);
                 } else {

@@ -26,6 +26,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Iterator;
@@ -82,15 +83,19 @@ public final class FormData implements Iterable<String> {
     }
 
     public void add(String name, String value) {
-        add(name, value, null);
+        add(name, value, null, null);
     }
 
     public void add(String name, String value, final HeaderMap headers) {
+        add(name, value, null, headers);
+    }
+
+    public void add(String name, String value, String charset, final HeaderMap headers) {
         Deque<FormValue> values = this.values.get(name);
         if (values == null) {
             this.values.put(name, values = new ArrayDeque<>(1));
         }
-        values.add(new FormValueImpl(value, headers));
+        values.add(new FormValueImpl(value, charset, headers));
         if (++valueCount > maxValues) {
             throw new RuntimeException(UndertowMessages.MESSAGES.tooManyParameters(maxValues));
         }
@@ -170,6 +175,11 @@ public final class FormData implements Iterable<String> {
         String getValue();
 
         /**
+         * @return The charset of the simple string value
+         */
+        String getCharset();
+
+        /**
          * Returns true if this is a file and not a simple string
          *
          * @return
@@ -201,8 +211,6 @@ public final class FormData implements Iterable<String> {
          * @return The headers that were present in the multipart request, or null if this was not a multipart request
          */
         HeaderMap getHeaders();
-
-
     }
 
     public static class FileItem {
@@ -255,7 +263,7 @@ public final class FormData implements Iterable<String> {
         public void write(Path target) throws IOException {
             if (file != null) {
                 try {
-                    Files.move(file, target);
+                    Files.move(file, target, StandardCopyOption.REPLACE_EXISTING);
                     return;
                 } catch (IOException e) {
                     // ignore and let the Files.copy, outside
@@ -263,7 +271,7 @@ public final class FormData implements Iterable<String> {
                 }
             }
             try (InputStream is = getInputStream()) {
-                Files.copy(is, target);
+                Files.copy(is, target, StandardCopyOption.REPLACE_EXISTING);
             }
         }
     }
@@ -275,9 +283,19 @@ public final class FormData implements Iterable<String> {
         private final String fileName;
         private final HeaderMap headers;
         private final FileItem fileItem;
+        private final String charset;
 
         FormValueImpl(String value, HeaderMap headers) {
             this.value = value;
+            this.headers = headers;
+            this.fileName = null;
+            this.fileItem = null;
+            this.charset = null;
+        }
+
+        FormValueImpl(String value, String charset, HeaderMap headers) {
+            this.value = value;
+            this.charset = charset;
             this.headers = headers;
             this.fileName = null;
             this.fileItem = null;
@@ -288,6 +306,7 @@ public final class FormData implements Iterable<String> {
             this.headers = headers;
             this.fileName = fileName;
             this.value = null;
+            this.charset = null;
         }
 
         FormValueImpl(byte[] data, String fileName, HeaderMap headers) {
@@ -295,6 +314,7 @@ public final class FormData implements Iterable<String> {
             this.fileName = fileName;
             this.headers = headers;
             this.value = null;
+            this.charset = null;
         }
 
 
@@ -304,6 +324,11 @@ public final class FormData implements Iterable<String> {
                 throw UndertowMessages.MESSAGES.formValueIsAFile();
             }
             return value;
+        }
+
+        @Override
+        public String getCharset() {
+            return charset;
         }
 
         @Override

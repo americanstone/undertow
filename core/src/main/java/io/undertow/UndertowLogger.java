@@ -31,6 +31,8 @@ import org.jboss.logging.annotations.Cause;
 import org.jboss.logging.annotations.LogMessage;
 import org.jboss.logging.annotations.Message;
 import org.jboss.logging.annotations.MessageLogger;
+import org.xnio.channels.ReadTimeoutException;
+import org.xnio.channels.WriteTimeoutException;
 import org.xnio.ssl.SslConnection;
 
 import java.io.IOException;
@@ -41,6 +43,7 @@ import java.net.URI;
 import java.nio.file.Path;
 import java.util.Date;
 import java.util.List;
+import java.util.concurrent.RejectedExecutionException;
 
 import static org.jboss.logging.Logger.Level.DEBUG;
 import static org.jboss.logging.Logger.Level.ERROR;
@@ -58,6 +61,7 @@ public interface UndertowLogger extends BasicLogger {
     UndertowLogger ROOT_LOGGER = Logger.getMessageLogger(UndertowLogger.class, UndertowLogger.class.getPackage().getName());
     UndertowLogger CLIENT_LOGGER = Logger.getMessageLogger(UndertowLogger.class, ClientConnection.class.getPackage().getName());
 
+    UndertowLogger PREDICATE_LOGGER = Logger.getMessageLogger(UndertowLogger.class, UndertowLogger.class.getPackage().getName() + ".predicate");
     UndertowLogger REQUEST_LOGGER = Logger.getMessageLogger(UndertowLogger.class, UndertowLogger.class.getPackage().getName() + ".request");
     UndertowLogger SESSION_LOGGER = Logger.getMessageLogger(UndertowLogger.class, UndertowLogger.class.getPackage().getName() + ".session");
     UndertowLogger SECURITY_LOGGER = Logger.getMessageLogger(UndertowLogger.class, UndertowLogger.class.getPackage().getName() + ".request.security");
@@ -423,4 +427,16 @@ public interface UndertowLogger extends BasicLogger {
     @LogMessage(level = DEBUG)
     @Message(id = 5092, value = "Failed to free direct buffer")
     void directBufferDeallocationFailed(@Cause Throwable t);
+
+    @LogMessage(level = DEBUG)
+    @Message(id = 5093, value = "Blocking read timed out")
+    void blockingReadTimedOut(@Cause ReadTimeoutException rte);
+
+    @LogMessage(level = DEBUG)
+    @Message(id = 5094, value = "Blocking write timed out")
+    void blockingWriteTimedOut(@Cause WriteTimeoutException rte);
+
+    @LogMessage(level = DEBUG)
+    @Message(id = 5095, value = "SSLEngine delegated task was rejected")
+    void sslEngineDelegatedTaskRejected(@Cause RejectedExecutionException ree);
 }
